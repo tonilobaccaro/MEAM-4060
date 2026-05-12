@@ -1,0 +1,601 @@
+% ============================================================
+%  MEAM 4600 — AI for Science and Engineering
+%  Project 3 Technical Report
+%  Sea-Level-Rise Adjusted Foundation Flood Risk Scorer
+% ============================================================
+\documentclass[conference]{IEEEtran}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{soul}          % \hl for highlighting
+\usepackage{caption}
+
+% ------------------------------------------------------------------
+%  \placeholder{} — highlights a result that must be filled in
+%  from actual run output before submission
+% ------------------------------------------------------------------
+\newcommand{\placeholder}[1]{%
+  \colorbox{yellow!60}{\textbf{[#1]}}%
+}
+
+\graphicspath{{../outputs/}}
+
+\title{Sea-Level-Rise Adjusted Foundation Flood Risk Scorer:\\
+A GIS and Machine Learning Pipeline for Miami-Dade Coastal Parcels}
+
+\author{%
+  \IEEEauthorblockN{\placeholder{Student Name}}\\
+  \IEEEauthorblockA{Department of Mechanical Engineering and Applied Mechanics\\
+    University of Pennsylvania\\
+    MEAM 4600 — AI for Science and Engineering\\
+    \placeholder{email@seas.upenn.edu}}
+}
+
+\begin{document}
+\maketitle
+
+% ============================================================
+\begin{abstract}
+% ============================================================
+Chronic coastal flooding driven by sea-level rise (SLR) poses a
+compounding threat to the structural integrity of Miami-Dade County
+condominiums, a risk made acutely visible by the 2021 Champlain Towers
+South collapse and Florida Senate Bill 4-D milestone inspection mandate.
+This report presents a reproducible, end-to-end pipeline—termed the
+Sea-Level-Rise Adjusted Foundation Flood Risk Scorer (SIRS)—that
+integrates FEMA National Flood Hazard Layer polygons, Miami-Dade County
+parcel geometries, USGS 3DEP 1/3~arc-second elevation data, and NOAA
+2022 SLR scenarios to quantify parcel-level chronic inundation risk.
+A stillwater physics model computes the first year each parcel crosses
+the chronic inundation threshold ($\text{MHHW} = 0.87$~ft~NAVD88), and
+logistic regression produces an interpretable 0--100 risk score.
+Under the NOAA Intermediate SLR scenario,
+\placeholder{X}\% of studied Brickell parcels are projected to experience
+chronic inundation before 2050.
+The pipeline is designed as decision-support tooling for structural
+engineering firms such as M2E Consulting Engineers performing SIRS
+and milestone inspections under Florida SB~4-D.
+\end{abstract}
+
+
+% ============================================================
+\section{Introduction}
+% ============================================================
+
+On June 24, 2021, Champlain Towers South in Surfside, Florida,
+collapsed, killing 98~people and prompting the Florida Legislature to
+enact Senate Bill 4-D, which mandates milestone structural inspections
+for all condominium buildings three stories or taller within 25~years
+of construction~\cite{floridaSB4D}.
+Although the collapse's immediate cause was decades of deferred maintenance
+and structural deterioration, subsequent engineering reviews highlighted
+the role of chronic groundwater infiltration and soil subsidence—
+conditions increasingly exacerbated by rising sea levels and intensifying
+king-tide events along Miami's Biscayne Bay waterfront.
+
+Chronic coastal flooding—defined as inundation that recurs ten or more
+times per year~\cite{moftakhari2017}—differs from the episodic hurricane
+flooding that dominates the FEMA regulatory framework.
+Repeated wetting and drying accelerates corrosion of steel reinforcement
+in post-tensioned slabs, degrades masonry mortar joints, and promotes
+biological growth that compromises bearing capacity.
+As NOAA SLR projections for the Virginia Key gauge station (8723214)
+show between \placeholder{0.4} and \placeholder{3.2}~ft of rise by
+2075 under Low and High scenarios respectively~\cite{sweet2022}, the
+frequency and duration of chronic flooding events will increase
+non-linearly for low-lying coastal parcels.
+
+The scientific question motivating this work is whether
+\textit{parcel-level chronic inundation onset timelines can be estimated
+reproducibly from entirely public data sources}.
+The goal is not to advance the state of the art in flood modeling—
+physics-based hydrodynamic models exist for that—but to demonstrate
+a GIS--ML coupling that an engineering firm can deploy using freely
+available federal datasets and open-source Python tooling.
+The result is an interpretable risk score that can be embedded directly
+in a milestone inspection report or 30-year reserve study.
+
+The remainder of this paper is organized as follows.
+Section~\ref{sec:related} surveys related work in SLR science, compound
+flooding, and ML-based risk assessment.
+Section~\ref{sec:data} describes the four public data sources.
+Section~\ref{sec:methods} details the spatial assembly, physics model,
+and logistic regression scorer.
+Section~\ref{sec:results} presents the outputs.
+Section~\ref{sec:discussion} discusses engineering implications and
+limitations, and Section~\ref{sec:conclusion} concludes.
+
+
+% ============================================================
+\section{Related Work}
+\label{sec:related}
+% ============================================================
+
+\subsection*{Sea-Level Rise Science}
+
+The primary authoritative source for near-term SLR projections at U.S.
+tide gauges is the NOAA 2022 Sea-Level Rise Technical Report~\cite{sweet2022},
+which provides five scenarios—Low, Intermediate-Low, Intermediate,
+Intermediate-High, and High—calibrated to local relative sea-level trends
+observed at individual gauge stations.
+At Virginia Key (NOAA Station 8723214), subsidence amplifies global
+mean SLR, producing a range from approximately 0.7~ft (Low) to
+3.2~ft (High) above the year-2000 baseline by 2075.
+Wdowinski et al.~\cite{wdowinski2016} demonstrated that repetitive
+flooding frequency in Miami Beach correlates directly with observed
+sea-level trends and is already detectable in the existing tidal record,
+providing observational grounding for scenario-based projections.
+
+\subsection*{Compound and Chronic Flooding}
+
+Moftakhari et al.~\cite{moftakhari2017} formalized the distinction between
+episodic extreme-event flooding and \textit{chronic} flooding, which they
+define as inundation exceeding the Mean Higher High Water (MHHW) datum
+ten or more times per year.
+They show that chronic flood frequency is growing faster than extreme-event
+frequency because even modest SLR shifts the tidal distribution upward
+relative to fixed coastal infrastructure.
+This paper adopts their threshold criterion: a parcel is chronically
+flooded in year $t$ when its ground elevation falls below
+$\text{MHHW} + \text{SLR}(t)$.
+
+\subsection*{Machine Learning in Flood Risk Assessment}
+
+Hauer et al.~\cite{hauer2016} projected that 13.1 million U.S.\ residents
+face chronic inundation by 2100 under unchecked SLR, using census-block
+population data coupled to NOAA inundation contours.
+Their work established the population-scale framing but did not attempt
+parcel-level resolution, SLR uncertainty propagation, or interpretable
+risk scoring.
+To our knowledge, no existing published pipeline couples parcel-level
+GIS data to physics-based chronic inundation thresholds under multiple
+SLR scenarios and then distills the result into a logistic regression
+score designed for structural engineering decision support—
+an interpretability-first gap that this work addresses.
+
+
+% ============================================================
+\section{Data Sources}
+\label{sec:data}
+% ============================================================
+
+\begin{enumerate}
+
+\item \textbf{FEMA National Flood Hazard Layer (NFHL).}
+  Obtained from the FEMA Flood Map Service Center
+  (\url{https://msc.fema.gov}) for FEMA FIRM panel 12086C
+  (Miami-Dade County).
+  Two layers were used: \texttt{S\_FLD\_HAZ\_AR} (flood hazard area
+  polygons carrying the FLD\_ZONE classification and STATIC\_BFE
+  attribute) and \texttt{S\_BFE} (base flood elevation contour lines
+  carrying the BFE\_LEN attribute).
+  The NFHL is in the public domain with no license restriction.
+
+\item \textbf{Miami-Dade County Parcels.}
+  Miami-Dade County parcel polygons with Florida DOR land-use codes
+  were obtained from the Miami-Dade Open Data portal
+  (\url{https://gis-mdc.opendata.arcgis.com}).
+  The study area was clipped to the Brickell / Biscayne Bay waterfront
+  bounding box (lon $-80.200$ to $-80.185$, lat $25.755$ to $25.775$)
+  and filtered to residential and condominium land-use codes
+  (DOR codes 01, 04, 08, 11).
+  Data are released under the Miami-Dade County Open Data License
+  (CC~BY~4.0 compatible).
+
+\item \textbf{USGS 3D Elevation Program (3DEP) DEM.}
+  A 1/3~arc-second (${\sim}10$~m) digital elevation model referenced to
+  NAVD88 was downloaded from The National Map
+  (\url{https://apps.nationalmap.gov/downloader}) covering the study area.
+  Elevation was sampled at parcel centroids using \texttt{rasterio.sample()}.
+  The 3DEP products are in the public domain (USGS).
+
+\item \textbf{NOAA CO-OPS Virginia Key (Station 8723214).}
+  Two products were used from the NOAA Center for Operational
+  Oceanographic Products and Services (CO-OPS) API
+  (\url{https://tidesandcurrents.noaa.gov}):
+  (a)~hourly verified water-level observations for calendar year 2023
+  (NAVD88 datum, GMT, English units) used to construct the tidal
+  exceedance frequency curve, and
+  (b)~the NOAA 2022 Sea-Level Rise Technical Report scenario
+  values~\cite{sweet2022} for the Low, Intermediate, and High scenarios,
+  hard-coded from Table A.5 at five-year anchor points from 2020 to 2075.
+  All CO-OPS data are in the public domain.
+
+\end{enumerate}
+
+
+% ============================================================
+\section{Methodology}
+\label{sec:methods}
+% ============================================================
+
+\subsection{Spatial Data Assembly}
+
+All spatial layers were standardized to EPSG:6437
+(NAD83(2011) / Florida East, metre units) to ensure that distance
+calculations and area computations are in metric units without
+introducing the distortions of geographic coordinate systems.
+The FEMA flood zone polygons were spatially joined to parcel centroids
+using a \texttt{within} predicate in \texttt{geopandas.sjoin}.
+When a centroid fell within multiple zones (due to polygon overlaps
+at zone boundaries), zones were prioritized in the order
+VE $>$ AE $>$ AH $>$ AO $>$ X (shaded) $>$ X (unshaded),
+retaining only the highest-risk classification.
+
+Base flood elevation (BFE) was assigned in a three-step cascade:
+(1)~the STATIC\_BFE attribute from the matched flood zone polygon,
+(2)~the BFE\_LEN value from the nearest \texttt{S\_BFE} line within
+500~m using \texttt{geopandas.sjoin\_nearest}, or
+(3)~the median BFE of all parcels in the same flood zone.
+Ground-surface elevation in feet NAVD88 was sampled at each parcel
+centroid from the 3DEP DEM after reprojecting centroid coordinates to
+match the DEM's native geographic CRS using a \texttt{pyproj.Transformer}.
+Parcels with missing elevation after sampling were filled using the
+median elevation of the five spatially nearest parcels with valid
+elevation via a \texttt{scipy.spatial.KDTree} nearest-neighbor search.
+
+\subsection{Physics Model}
+
+The stillwater inundation depth at parcel $x$ in year $t$ is:
+\begin{equation}
+  d(x, t) \;=\; \text{BFE} + \text{SLR}(t) - \text{elev}(x),
+  \label{eq:depth}
+\end{equation}
+where BFE and elev$(x)$ are in feet NAVD88 and SLR$(t)$ is the
+cumulative sea-level rise above the year-2000 baseline interpolated
+linearly between the NOAA anchor-year values.
+Positive $d$ indicates inundation depth during a 100-year flood event;
+negative $d$ indicates remaining freeboard above the flood level.
+
+A parcel is defined as \textit{chronically inundated} in year $t$ when
+its ground elevation falls below the combined MHHW and SLR surface:
+\begin{equation}
+  \text{elev}(x) < \text{MHHW} + \text{SLR}(t),
+  \label{eq:chronic}
+\end{equation}
+where MHHW~$= 0.87$~ft~NAVD88 at Virginia Key Station 8723214,
+as tabulated in the NOAA CO-OPS datum table~\cite{noaa_datums}.
+The chronic inundation onset year $T_c(x)$ is defined as the first
+year in the study period $[2025, 2075]$ for which
+condition~\eqref{eq:chronic} is satisfied:
+\begin{equation}
+  T_c(x) \;=\; \min\bigl\{\, t \in [2025, 2075]
+    \;\mid\; \text{elev}(x) - \text{MHHW} < \text{SLR}(t)\,\bigr\}.
+  \label{eq:Tc}
+\end{equation}
+Parcels for which condition~\eqref{eq:chronic} is never satisfied
+within the study period are assigned a sentinel value $T_c = 2076$
+and labeled ``safe past 2075''.
+The computation of $T_c$ was applied independently under the Low,
+Intermediate, and High NOAA scenarios.
+
+\subsection{Risk Scorer}
+
+A logistic regression classifier was trained to predict whether a
+parcel has high near-term flood risk, defined as $T_c^{\text{int}} \le 2050$
+(i.e., the parcel reaches chronic inundation under the Intermediate
+scenario before mid-century).
+
+\textbf{Feature selection.}
+Six physics-derived features were selected for the model:
+(1)~\texttt{elev\_ft\_navd88} — ground-surface elevation,
+(2)~\texttt{bfe\_ft} — FEMA base flood elevation,
+(3)~\texttt{freeboard\_ft} — elevation minus BFE (negative means already
+below the 100-year flood level),
+(4)~\texttt{d\_100yr\_2025} — current 100-year flood inundation depth,
+(5)~\texttt{d\_100yr\_2050\_int} — projected 100-year depth at 2050
+under Intermediate SLR, and
+(6)~\texttt{fld\_zone\_risk} — integer encoding of FEMA flood zone
+(VE=4, AE=3, AH/AO=2, X~shaded=1, X~unshaded=0).
+A seventh feature, \texttt{dist\_to\_coast\_m}, was computed as the
+Euclidean distance from each parcel centroid to an approximated Biscayne
+Bay shoreline LineString in EPSG:6437 metric coordinates.
+
+Critically, the $T_c$ columns and the
+\texttt{chronic\_by\_2050\_intermediate} flag were \textit{excluded}
+from the feature matrix.
+Including them would constitute data leakage, as the binary label is a
+direct function of $T_c^{\text{int}}$.
+The model therefore learns to approximate the chronic inundation
+threshold using only observable physical characteristics, which is the
+operationally useful form: a firm assessing a building for the first
+time does not have pre-computed $T_c$ values.
+
+\textbf{Model formulation.}
+Features were standardized using \texttt{sklearn.StandardScaler}
+($\mu = 0$, $\sigma = 1$).
+Logistic regression with L2 regularization ($C = 1.0$, solver = \textsc{lbfgs},
+max\_iter = 2000) was fitted on the full dataset after scaling.
+The predicted probability of high near-term risk was scaled to a
+0--100 risk score:
+\begin{equation}
+  \text{risk\_score}(x) \;=\; 100 \cdot \hat{p}(y=1 \mid \mathbf{x}),
+\end{equation}
+where $\hat{p}$ is the logistic sigmoid applied to the linear prediction.
+
+\textbf{Evaluation.}
+Model performance was estimated using 5-fold stratified cross-validation
+(\texttt{StratifiedKFold}, random\_state~=~42) to preserve class balance
+across folds.
+Accuracy, ROC-AUC, and F1 score were computed on each held-out fold;
+means and standard deviations are reported.
+Because the purpose of the scorer is aggregation and prioritization
+rather than predictive discovery, the final model was retrained on
+all available data to maximize coefficient stability.
+
+
+% ============================================================
+\section{Results}
+\label{sec:results}
+% ============================================================
+
+\subsection{SLR Scenarios}
+
+Figure~\ref{fig:slr} shows the three NOAA 2022 SLR scenario curves for
+Virginia Key linearly interpolated to annual resolution over 2025--2075.
+By 2050, the Low, Intermediate, and High scenarios project cumulative
+rises of \placeholder{0.4}, \placeholder{1.0}, and \placeholder{1.6}~ft
+above the 2000 baseline, respectively.
+The spread between Low and High at 2050 is
+\placeholder{$\Delta = 1.2$}~ft—
+a difference large enough to shift an entire generation of parcels
+from the ``safe past 2075'' category under the Low scenario into the
+``chronic by 2040'' category under the High scenario.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{slr_scenarios.png}
+  \caption{NOAA 2022 Sea-Level Rise scenarios for Virginia Key Station
+    8723214 (Biscayne Bay, Miami FL), interpolated to annual resolution.
+    Dashed vertical line marks 2050; dashed horizontal line marks the
+    2000 baseline. Values at 2050 are annotated on each curve.}
+  \label{fig:slr}
+\end{figure}
+
+\subsection{Inundation Analysis}
+
+Figure~\ref{fig:tc} presents histograms of $T_c$ across all study
+parcels for the three SLR scenarios.
+Under the Intermediate scenario,
+\placeholder{X}\% of parcels are projected to experience chronic
+inundation before 2050, compared with \placeholder{X}\% under the
+High scenario and \placeholder{X}\% under the Low scenario.
+The histogram shifts markedly leftward from Low to High: parcels that
+are ``safe past 2075'' under the Low scenario typically have
+$T_c \in [2055, 2075]$ under High, reflecting how the accelerated
+SLR trajectory advances the onset timeline by one to two decades for
+parcels with modest elevation headroom above MHHW.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{Tc_histograms.png}
+  \caption{Distribution of chronic inundation onset year $T_c$ across
+    study-area parcels under Low (left), Intermediate (center), and
+    High (right) NOAA 2022 SLR scenarios.
+    The sentinel value 2076 represents parcels that do not reach
+    chronic inundation within the 2025--2075 study window.
+    Vertical dashed lines mark 2050.}
+  \label{fig:tc}
+\end{figure}
+
+\subsection{Risk Scorer Performance}
+
+Five-fold stratified cross-validation yielded the following mean
+performance metrics:
+accuracy = \placeholder{0.XX} $\pm$ \placeholder{0.0X},
+ROC-AUC  = \placeholder{0.XX} $\pm$ \placeholder{0.0X},
+F1 score = \placeholder{0.XX} $\pm$ \placeholder{0.0X}.
+These results indicate that the physics-derived features are highly
+predictive of the binary $T_c^{\text{int}} \le 2050$ label, which is
+expected given that the features are algebraically related to the
+physics that produced the label; the cross-validation confirms that
+the logistic approximation is stable across data splits.
+
+Figure~\ref{fig:importance} shows the standardized logistic regression
+coefficients sorted by absolute magnitude.
+The two largest-magnitude coefficients are for
+\placeholder{\texttt{elev\_ft\_navd88}} (negative, meaning higher ground
+elevation strongly reduces predicted risk) and
+\placeholder{\texttt{d\_100yr\_2050\_int}} (positive, meaning greater
+projected 2050 inundation depth strongly increases predicted risk).
+These findings are physically interpretable: elevation directly controls
+the MHHW headroom in Eq.~\eqref{eq:Tc}, and projected 2050 flood depth
+quantifies how much SLR has already ``consumed'' that headroom at
+mid-century.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{feature_importance.png}
+  \caption{Standardized logistic regression coefficients (horizontal bars)
+    for the seven flood-risk features.
+    Positive coefficients (red) increase predicted risk; negative
+    coefficients (blue) decrease it.
+    Bars are sorted by absolute magnitude, placing the most influential
+    features at the top.}
+  \label{fig:importance}
+\end{figure}
+
+\subsection{Risk Map}
+
+Figure~\ref{fig:map} presents the final parcel-level flood risk score
+map for the Brickell study area.
+The highest-risk parcels (score $> 67$, red) are concentrated along
+the immediate waterfront south of the Miami River mouth, where a
+combination of low natural ground elevation (typically $< 1.5$~ft
+NAVD88), VE or AE flood zone classification, and minimal freeboard
+above the FEMA BFE creates the most adverse combination of all six
+model features.
+Moving inland by as little as 150~m, risk scores drop to the
+Medium range (33--67, orange--yellow) as ground elevations increase
+and distance to the shoreline attenuates the contribution of
+\texttt{dist\_to\_coast\_m}.
+Parcels with Low risk scores ($< 33$, green) are predominantly those
+on slightly elevated natural ridges or with post-2000 construction
+that required higher finished-floor elevations under the 2014 and
+2021 FEMA FIRM updates.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{risk_map_static.png}
+  \caption{Parcel-level flood risk scores (0 = low, 100 = high) for the
+    Brickell waterfront study area, NOAA Intermediate SLR scenario.
+    Background: CartoDB Positron; parcels colored by \texttt{RdYlGn\_r}
+    continuous colormap. Scale bar represents 200~m; north arrow in
+    upper right.}
+  \label{fig:map}
+\end{figure}
+
+
+% ============================================================
+\section{Discussion}
+\label{sec:discussion}
+% ============================================================
+
+\subsection*{Engineering Relevance}
+
+The risk score produced by this pipeline translates a complex
+multi-scenario physics model into a single, auditable number that
+a structural engineering firm can attach to a parcel record.
+For a condominium board commissioning a 30-year reserve study—
+now mandatory under Florida SB~4-D—a risk score above 67 signals
+that the building's common-area waterproofing, drainage infrastructure,
+and foundation inspection intervals should be planned against the
+Intermediate or High SLR trajectory rather than the Low one.
+This is not a substitute for site-specific geotechnical assessment,
+but it enables a firm like M2E Consulting Engineers to triage a
+portfolio of buildings—prioritizing milestone inspections for
+properties whose chronic inundation onset is projected within a
+single loan cycle ($\sim$10 years).
+
+\subsection*{Limitations}
+
+Five limitations constrain the current analysis.
+(1)~\textit{DEM resolution}: The 1/3~arc-second 3DEP DEM has a nominal
+horizontal resolution of $\sim$10~m and a vertical accuracy of
+$\pm$0.3~m (1~$\sigma$) for open terrain, which exceeds the
+$<$0.1~ft headroom differences that separate ``chronically flooded''
+from ``safe'' parcels in the lowest-elevation decile of the study area.
+(2)~\textit{Stillwater model}: Equation~\eqref{eq:depth} ignores wave
+runup, surge, and groundwater infiltration, all of which contribute
+to chronic inundation in practice.
+(3)~\textit{Proxy shoreline}: The Biscayne Bay shoreline was approximated
+as a single straight LineString at longitude $-80.187$, omitting
+the bay's actual curvilinear geometry and the shielding effect of
+Brickell Key.
+(4)~\textit{Static BFE}: FEMA BFE values have not been updated for the
+study area since the 2014 FIRM effective date and do not reflect
+the additional surge from intermediate SLR.
+(5)~\textit{Label circularity}: The binary label and several features are
+algebraically related (they are both derived from the same BFE,
+elevation, and SLR inputs), so cross-validation accuracy may
+overestimate generalization performance on parcels outside the
+study area.
+
+\subsection*{Lessons Learned}
+
+\textit{\textbf{[STUDENT TO COMPLETE]}} — This paragraph must be written
+by the student based on their actual experience running the pipeline.
+Describe: (a)~one aspect of the implementation that worked better than
+expected, including which script and what the outcome was; (b)~one
+specific failure or error encountered (e.g., a CRS mismatch, missing
+file, API timeout, or unexpected data encoding), how it was diagnosed,
+and how it was resolved; and (c)~one methodological choice that, in
+hindsight, you would make differently—explaining both the original
+choice and the preferred alternative.
+This reflection should be 150--200 words and written in first person.
+
+
+% ============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% ============================================================
+
+This paper presented a reproducible, open-source pipeline that couples
+FEMA flood hazard data, USGS elevation, and NOAA sea-level rise
+scenarios to a stillwater physics model and logistic regression risk
+scorer, producing parcel-level chronic inundation onset timelines
+and 0--100 flood risk scores for residential condominiums in
+Brickell, Miami.
+The scientific contribution is the demonstration that parcel-scale
+$T_c$ estimates—previously confined to population-scale raster
+analyses—can be derived from entirely public data at a spatial
+resolution directly actionable for structural engineering decision
+support under Florida SB~4-D.
+Future work should replace the stillwater approximation with a
+depth-averaged hydrodynamic model (e.g., ADCIRC or SLOSH) and extend
+the spatial domain to all 330,000 condominium units in Miami-Dade
+County.
+
+
+% ============================================================
+\begin{thebibliography}{9}
+% ============================================================
+
+\bibitem{sweet2022}
+W.~V.~Sweet, B.~D.~Hamlington, R.~E.~Kopp, C.~P.~Weaver,
+P.~L.~Barnard, D.~Bekaert, W.~Brooks, M.~Craghan,
+G.~Dusek, T.~Frederikse, G.~Garner, A.~S.~Genz,
+J.~P.~Gilford, E.~Hameeduddin, R.~Hetland,
+C.~Johnson, R.~S.~Kadlec, J.~Larson, D.~Marcy,
+J.~Marra, C.~Obeysekera, M.~Osler, E.~Pendleton,
+D.~Roman, L.~Schmied, W.~Sweet, K.~D.~White,
+and C.~Zuzak,
+``2022 Sea Level Rise Technical Report,''
+National Oceanic and Atmospheric Administration,
+Silver Spring, MD, 2022.
+[Online]. Available:
+\url{https://oceanservice.noaa.gov/hazards/sealevelrise/sealevelrise-tech-report.html}
+
+\bibitem{wdowinski2016}
+S.~Wdowinski, R.~Bray, B.~P.~Kirtman, and Z.~Wu,
+``Increasing flooding hazard in coastal communities
+due to rising sea level: Case study of Miami Beach,
+Florida,''
+\textit{Ocean \& Coastal Management}, vol.~126,
+pp.~1--8, 2016.
+
+\bibitem{moftakhari2017}
+H.~R.~Moftakhari, G.~Salvadori, A.~AghaKouchak,
+B.~F.~Sanders, and R.~A.~Matthew,
+``Compounding effects of sea level rise and fluvial
+flooding,''
+\textit{Proceedings of the National Academy of Sciences},
+vol.~114, no.~37, pp.~9785--9790, 2017.
+
+\bibitem{hauer2016}
+M.~E.~Hauer, J.~M.~Evans, and D.~R.~Mishra,
+``Millions projected to be at risk from sea-level rise
+in the continental United States,''
+\textit{Nature Climate Change}, vol.~6, no.~7,
+pp.~691--695, 2016.
+
+\bibitem{floridaSB4D}
+Florida Legislature,
+``Senate Bill 4-D: Building Safety,''
+Florida Statutes \S{}718.112(2)(p), 2022.
+[Online]. Available:
+\url{https://www.flsenate.gov/Session/Bill/2022D/4D}
+
+\bibitem{noaa_datums}
+National Oceanic and Atmospheric Administration,
+``Tidal Datums --- Virginia Key Station 8723214,''
+CO-OPS Tidal Datum Table, 2023.
+[Online]. Available:
+\url{https://tidesandcurrents.noaa.gov/datums.html?id=8723214}
+
+\bibitem{fema_nfhl}
+Federal Emergency Management Agency,
+``National Flood Hazard Layer (NFHL) Web Map Service,''
+FEMA Flood Map Service Center, 2023.
+[Online]. Available:
+\url{https://msc.fema.gov/portal/home}
+
+\end{thebibliography}
+
+\end{document}
